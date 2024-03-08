@@ -41,17 +41,17 @@ class Author:
         return self.author_name
 
 class Family:
-    def __init__(self, taxon_id: str, scientific_name: str, author: Optional[Author]):
+    def __init__(self, taxon_id: str, scientific_name: str):
         self.taxon_id = taxon_id
         self.scientific_name: str = scientific_name
         self.common_name: Optional[str] = name_db.find(taxon_id)
-        self.author: Optional[Author] = author
 
 class Genus:
-    def __init__(self, taxon_id: str, scientific_name: str, year_discovered: int, family: Family):
+    def __init__(self, taxon_id: str, scientific_name: str, year_discovered: int, family: Family, authors: List[str]):
         self.taxon_id = taxon_id
         self.scientific_name = scientific_name
         self.year_discovered = year_discovered
+        self.authors: List[str] = authors
         self.family = family
 
     def __str__(self) -> str:
@@ -130,29 +130,30 @@ class BirdDB:
         parent_id: str = row['parentNameUsageID']
         scientific_name = row['scientificName']
         authorship_string = row['scientificNameAuthorship']
-        id: str  = row['taxonID']
+        id: str = row['taxonID']
 
-        author_names: List[str] = self.get_author_names(authorship_string)
-        authors_to_add = author_names.copy()
-        authors: List[Author] = []
+        # this is SUPER slow, best to only run this when we need to.
+        if rank == 'genus' or rank == 'species':
+            author_names: List[str] = self.get_author_names(authorship_string)
+            authors_to_add = author_names.copy()
+            authors: List[Author] = []
 
-        for author in self.authors:
-            if author.author_name in authors_to_add:
-                authors_to_add.remove(author.author_name)
-                continue
+            for author in self.authors:
+                if author.author_name in authors_to_add:
+                    authors_to_add.remove(author.author_name)
+                    continue
 
-        for name in author_names:
-            author = Author(name)
-            self.authors.append(author)
-
+            for name in author_names:
+                author = Author(name)
+                self.authors.append(author)
 
         if rank == 'family':
-            family = Family(id, scientific_name, None)
+            family = Family(id, scientific_name)
             self.families.append(family)
 
         elif rank == 'genus':
             parent_family = next(family for family in self.families if family.taxon_id == parent_id)
-            genus = Genus(id, scientific_name, self.get_year_discovered(authorship_string), parent_family)
+            genus = Genus(id, scientific_name, self.get_year_discovered(authorship_string), parent_family, author_names)
             self.genera.append(genus)
 
         elif rank == 'species':
@@ -183,8 +184,93 @@ class BirdDB:
         return results
 
 
+class SQLGenerator:
+    def __init__(self, bird_db: BirdDB, output_filename: str):
+        self.bird_db = bird_db
+        self.output_file = open(output_filename, "w")
+
+    def generate_authors(self):
+        output_data = "INSERT INTO authors VALUES\n"
+
+
+        for author in self.bird_db.authors:
+            output_data += f"\t('{author.author_name}')"
+            if author != self.bird_db.authors[-1]:
+                output_data += ',\n'
+
+        output_data += ';\n\n'
+
+        self.output_file.write(output_data)
+
+    def generate_families(self):
+        output_data = "INSERT INTO families VALUES\n"
+
+        for family in self.bird_db.families:
+            output_data += f"\t('{family.scientific_name}', '{family.common_name}')"
+            if family != self.bird_db.families[-1]:
+                output_data += ',\n'
+
+        output_data += ';\n\n'
+
+        self.output_file.write(output_data)
+
+    def generate_genera(self):
+        output_data = "INSERT INTO genera VALUES\n"
+
+        for genus in self.bird_db.genera:
+            output_data += f"\t('{genus.scientific_name}', {genus.year_discovered}, (SELECT scientific_name FROM families WHERE scientific_name = '{genus.family.scientific_name}'))"
+            if genus != self.bird_db.genera[-1]:
+                output_data += ',\n'
+
+        output_data += ';\n\n'
+
+        self.output_file.write(output_data)
+
+    def generate_species(self):
+        output_data = "INSERT INTO species VALUES\n"
+
+        for species in self.bird_db.species:
+            output_data += f"\t('{species.scientific_name}', '{species.common_name}', {species.year_discovered}, (SELECT scientific_name FROM genera WHERE scientific_name = '{species.genus.scientific_name}'))"
+            if species != self.bird_db.genera[-1]:
+                output_data += ',\n'
+
+        output_data += ';\n\n'
+
+        self.output_file.write(output_data)
+
+    def generate_discovery_types(self):
+        output_data = "INSERT INTO discovery_types\nVALUES\n\t('SPECIES')\n\t('GENUS');\n\n"
+        self.output_file.write(output_data)
+
+    def generate_bird_authors(self):
+        output_data = "INSERT INTO bird_authors VALUES\n"
+
+        # shield your eyes, this one is pretty ripe.
+        for genus in self.bird_db.genera:
+            for author in genus.authors:
+                output_data += f"\t((SELECT id FROM authors WHERE author_name = '{author}'), (SELECT discovery_type FROM discovery_types WHERE discovery_type = 'GENUS'), NULL, (SELECT scientific_name FROM genus WHERE scientific_name = '{genus.scientific_name}'))"
+                output_data += ',\n'
+
+        for species in self.bird_db.species:
+            for author in species.authors:
+                output_data += f"\t((SELECT id FROM authors WHERE author_name = '{author}'), (SELECT discovery_type FROM discovery_types WHERE discovery_type = 'SPECIES'), NULL, (SELECT scientific_name FROM species WHERE scientific_name = '{species.scientific_name}'))"
+                if author != species.authors[-1] and species != self.bird_db.species[-1]:
+                    output_data += ',\n'
+
+        output_data += ';\n\n'
+
+        self.output_file.write(output_data)
+
+    def generate(self):
+        self.generate_authors()
+        self.generate_families()
+        self.generate_genera()
+        self.generate_discovery_types()
+        self.generate_bird_authors()
+
 
 bird_db = BirdDB()
+generator = SQLGenerator(bird_db, "output.txt")
 
 def generate_db():
     # load our vernacular mames
@@ -195,14 +281,19 @@ def generate_db():
     with open('taxon.csv') as bird_file:
         bird_db.load(bird_file)
 
-    family = next(family for family in bird_db.families if family.scientific_name == 'Apodidae')
-    genera_in_family = bird_db.find_in_family(family)
+    # family = next(family for family in bird_db.families if family.scientific_name == 'Apodidae')
+    # genera_in_family = bird_db.find_in_family(family)
+
     # for genus in genera_in_family:
     #     print(genus)
-    species_in_genus = bird_db.find_in_genus(genera_in_family[1])
-    for species in species_in_genus:
-        print(species)
-        species.print_authors()
+
+    # species_in_genus = bird_db.find_in_genus(genera_in_family[1])
+    # for species in species_in_genus:
+    #     print(species)
+    #     species.print_authors()
+
+    generator.generate()
+
     # for species in bird_db.species:
     #     if species.taxon_id == '25f96c869ac945904c37ff2344261d49':
     #         print(species)
