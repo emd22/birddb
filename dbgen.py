@@ -26,8 +26,18 @@ class NameDB:
     def load(self, name_file):
         name_reader = csv.DictReader(name_file)
         for row in name_reader:
-            name_obj = CommonName(row['taxonID'], sanitize(row['vernacularName']))
-            self.common_names.append(name_obj)
+            base_name = row['vernacularName']
+
+            names = [base_name]
+
+            if ',' in base_name:
+                names = base_name.split(',')
+            elif '&' in base_name:
+                names = base_name.split('&')
+
+            for name in names:
+                name_obj = CommonName(row['taxonID'], sanitize(name))
+                self.common_names.append(name_obj)
 
     def print(self, count: Optional[int]=None):
         amt_names: Final[int] = len(self.common_names)
@@ -245,11 +255,11 @@ class SQLGenerator:
         self.output_file.write(output_data)
 
     def generate_species(self):
-        output_data = "INSERT INTO species (scientfic_name, common_name, year_discovered, genus_scientific_name) VALUES\n"
+        output_data = "INSERT INTO species (scientific_name, common_name, year_discovered, genus_scientific_name) VALUES\n"
 
         for species in self.bird_db.species:
             output_data += f"\t('{species.scientific_name}', '{species.common_name}', {species.year_discovered}, (SELECT scientific_name FROM genera WHERE scientific_name = '{species.genus.scientific_name}'))"
-            if species != self.bird_db.genera[-1]:
+            if species != self.bird_db.species[-1]:
                 output_data += ',\n'
 
         output_data += ';\n\n'
@@ -291,6 +301,7 @@ class SQLGenerator:
         self.generate_authors()
         self.generate_families()
         self.generate_genera()
+        self.generate_species()
         self.generate_discovery_types()
         self.generate_bird_authors()
 
