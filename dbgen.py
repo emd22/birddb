@@ -208,7 +208,7 @@ class SQLGenerator:
         self.output_file = open(output_filename, "w")
 
     def generate_authors(self):
-        output_data = "INSERT INTO authors VALUES \\\n"
+        output_data = "INSERT INTO authors (author_name) VALUES \n"
 
 
         for author in self.bird_db.authors:
@@ -221,7 +221,7 @@ class SQLGenerator:
         self.output_file.write(output_data)
 
     def generate_families(self):
-        output_data = "INSERT INTO families VALUES \\\n"
+        output_data = "INSERT INTO families (scientific_name, common_name) VALUES\n"
 
         for family in self.bird_db.families:
             output_data += f"\t('{family.scientific_name}', '{family.common_name}')"
@@ -233,7 +233,7 @@ class SQLGenerator:
         self.output_file.write(output_data)
 
     def generate_genera(self):
-        output_data = "INSERT INTO genera VALUES \\\n"
+        output_data = "INSERT INTO genera (scientific_name, year_discovered, family_scientific_name) VALUES\n"
 
         for genus in self.bird_db.genera:
             output_data += f"\t('{genus.scientific_name}', {genus.year_discovered}, (SELECT scientific_name FROM families WHERE scientific_name = '{genus.family.scientific_name}'))"
@@ -245,7 +245,7 @@ class SQLGenerator:
         self.output_file.write(output_data)
 
     def generate_species(self):
-        output_data = "INSERT INTO species VALUES \\\n"
+        output_data = "INSERT INTO species (scientfic_name, common_name, year_discovered, genus_scientific_name) VALUES\n"
 
         for species in self.bird_db.species:
             output_data += f"\t('{species.scientific_name}', '{species.common_name}', {species.year_discovered}, (SELECT scientific_name FROM genera WHERE scientific_name = '{species.genus.scientific_name}'))"
@@ -257,26 +257,34 @@ class SQLGenerator:
         self.output_file.write(output_data)
 
     def generate_discovery_types(self):
-        output_data = "INSERT INTO discovery_types VALUES\\\n\t('SPECIES'),\n\t('GENUS');\n\n"
+        output_data = "INSERT INTO discovery_types (discovery_type) VALUES\n\t('SPECIES'),\n\t('GENUS');\n\n"
         self.output_file.write(output_data)
 
     def generate_bird_authors(self):
-        output_data = "INSERT INTO bird_authors VALUES \\\n"
+        output_data = "INSERT INTO bird_authors (author_id, discovery_type, genus_scientific_name) VALUES\n"
 
+        print(f'writing {len(self.bird_db.genera)} author collections [genera]')
         # shield your eyes, this one is pretty ripe.
         for genus in self.bird_db.genera:
             for author in genus.authors:
-                output_data += f"\t((SELECT id FROM authors WHERE author_name = '{author}'), (SELECT discovery_type FROM discovery_types WHERE discovery_type = 'GENUS'), NULL, (SELECT scientific_name FROM genus WHERE scientific_name = '{genus.scientific_name}'))"
+                output_data += f"\t((SELECT id FROM authors WHERE author_name = '{author}' LIMIT 1), (SELECT discovery_type FROM discovery_types WHERE discovery_type = 'GENUS'), (SELECT scientific_name FROM genera WHERE scientific_name = '{genus.scientific_name}'))"
+                if author == genus.authors[-1] and genus == self.bird_db.genera[-1]:
+                    break
                 output_data += ',\n'
 
+        output_data += ';\n\n'
+        self.output_file.write(output_data)
+
+        output_data = "INSERT INTO bird_authors (author_id, discovery_type, species_scientific_name) VALUES\n"
+        print(f'writing {len(self.bird_db.species)} author collections [species]')
         for species in self.bird_db.species:
             for author in species.authors:
-                output_data += f"\t((SELECT id FROM authors WHERE author_name = '{author}'), (SELECT discovery_type FROM discovery_types WHERE discovery_type = 'SPECIES'), NULL, (SELECT scientific_name FROM species WHERE scientific_name = '{species.scientific_name}'))"
-                if author != species.authors[-1] and species != self.bird_db.species[-1]:
-                    output_data += ',\n'
+                output_data += f"\t((SELECT id FROM authors WHERE author_name = '{author}' LIMIT 1), (SELECT discovery_type FROM discovery_types WHERE discovery_type = 'SPECIES'), (SELECT scientific_name FROM species WHERE scientific_name = '{species.scientific_name}'))"
+                if author == species.authors[-1] and species == self.bird_db.species[-1]:
+                    break
+                output_data += ',\n'
 
         output_data += ';\n\n'
-
         self.output_file.write(output_data)
 
     def generate(self):
@@ -288,7 +296,7 @@ class SQLGenerator:
 
 
 bird_db = BirdDB()
-generator = SQLGenerator(bird_db, "output.txt")
+generator = SQLGenerator(bird_db, "output.sql")
 
 def generate_db():
     # load our vernacular mames
