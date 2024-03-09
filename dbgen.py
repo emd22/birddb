@@ -2,20 +2,26 @@ import csv
 from typing import List, Final, Optional
 import re
 
+# sanitize all names! some contain apostrophes or other garbage data that
+# MySQL really doesn't cope with well.
 def sanitize(data: str) -> str:
     # apostrophes can be a catastrophe
     if '\'' in data:
         data = data.replace('\'', '')
-    # replace any non-ascii characters
+
+    # remove any non-ascii characters. for some reason, the data has a lot of
+    # odd symbols that can mangle MySQL
     data = ''.join(ch for ch in data if ord(ch) < 128).strip()
     if len(data) > 0 and data[-1] == ',':
         data = data[:-1]
     return data
 
+
 class CommonName:
     def __init__(self, id: str, name: str):
-        self.id = id
-        self.name = name
+        self.id = id                # this is our taxonID!
+        self.name = sanitize(name)  # sqeaky clean
+
     def __str__(self) -> str:
         return f'{self.id} || {self.name}'
 
@@ -25,27 +31,41 @@ class NameDB:
 
     def load(self, name_file):
         name_reader = csv.DictReader(name_file)
+        # read each row from the vernacular_names csv
         for row in name_reader:
+            # load in the raw data. this can hold multiple values, so we gotta split em.
+            # vvv see next comment vvv
             base_name = row['vernacularName']
 
             names = [base_name]
 
+            # some entries contain multiple names per taxon id, so we need to split
+            # them up to be in 3rd normal form
             if ',' in base_name:
                 names = base_name.split(',')
+            # a pair of entries are usually separated with an ampersand, but not always!
+            # always gotta check for that comma
             elif '&' in base_name:
                 names = base_name.split('&')
 
+            # for each name that we find, generate an entry that we can reference when
+            # reading in species and genera.
             for name in names:
                 name_obj = CommonName(row['taxonID'], sanitize(name))
                 self.common_names.append(name_obj)
 
+    # handy dandy print function for debugging
     def print(self, count: Optional[int]=None):
+        # does optimization here even matter? i did write this in python after all...
+        # i think this just gets compiled to a legit 'len' instruction in the vm anyway
         amt_names: Final[int] = len(self.common_names)
         max_iters: Final[int] = min(count, amt_names) if count else amt_names
 
         for i in range(0, max_iters):
             print(self.common_names[i])
 
+    # this should definitely all be in a hash table or something. this makes me sad
+    # issue is i had in total like 4 hours to write everything
     def find(self, taxon_id: str) -> Optional[str]:
         for name in self.common_names:
             if name.id == taxon_id:
@@ -54,11 +74,14 @@ class NameDB:
 
 name_db = NameDB()
 
+
 class Author:
     def __init__(self, author_name: str):
         self.author_name = sanitize(author_name)
+
     def __str__(self) -> str:
         return self.author_name
+
 
 class Family:
     def __init__(self, taxon_id: str, scientific_name: str):
@@ -81,6 +104,7 @@ class Species:
     def __init__(self, taxon_id: str, scientific_name: str, year_discovered: Optional[int], genus: Genus, authors: List[str]):
         self.taxon_id = taxon_id
         self.scientific_name = sanitize(scientific_name)
+        # the common name
         self.common_name = name_db.find(taxon_id)
         self.year_discovered = year_discovered
         self.authors: List[str] = authors
@@ -99,11 +123,12 @@ class BirdDB:
         self.species: List[Species] = []
         self.authors: List[Author] = []
 
+    # split out the year discovered from the authorship string
     def get_year_discovered(self, authorship) -> int:
         # get the last token split by commas, strip whitespace
         base_str = authorship.split(',')[-1].strip()
 
-        # only some of these have parenthesis!
+        # only some of these have parenthesis
         if base_str[-1] == ')':
             base_str = base_str[:-1]
 
@@ -118,21 +143,24 @@ class BirdDB:
         if authorship[0] == '(':
             authorship = authorship[1:]
 
-        # when there is a date string, return everything before it
+        # make sure we dont have the year included, because we already parsed that
+        # >> see get_year_discovered <<
         splits = authorship.split(',')[:-1]
 
         for i in range(0, len(splits)):
             if '&' in splits[i]:
+                # EWW
                 split = splits[i].split('&')
                 splits.pop(i)
                 splits += [split[0], split[1]]
 
         prev_name = ''
+
         for name in splits:
             name = sanitize(name)
 
             # most likely someones initials after their surname.
-            # no idea why they would separate with a comma,  but here we are.
+            # no idea why they would separate with a comma, but here we are
             if len(name) <= 3 and len(splits) > 2:
                 if len(authors) > 0:
                     authors.pop()
@@ -142,6 +170,7 @@ class BirdDB:
             authors.append(name.strip())
 
             prev_name = name
+
         return authors
 
     def add_unique_authors(self, author_names: List[str]):
@@ -171,6 +200,7 @@ class BirdDB:
         author_names: List[str] = []
 
         # this is SUPER slow, best to only run this when we need to.
+        # or you can run it all the time, i'm not your mom
         if rank == 'genus' or rank == 'species':
             author_names = self.get_author_names(authorship_string)
             self.add_unique_authors(author_names.copy())
@@ -180,11 +210,13 @@ class BirdDB:
             self.families.append(family)
 
         elif rank == 'genus':
+            # connect the genus to a parent family
             parent_family = next(family for family in self.families if family.taxon_id == parent_id)
             genus = Genus(id, scientific_name, self.get_year_discovered(authorship_string), parent_family, author_names)
             self.genera.append(genus)
 
         elif rank == 'species':
+            # connect our species to a parent genus
             parent_genus = next(genus for genus in self.genera if genus.taxon_id == parent_id)
             species = Species(id, scientific_name, self.get_year_discovered(authorship_string), parent_genus, author_names)
             self.species.append(species)
@@ -211,7 +243,6 @@ class BirdDB:
 
         return results
 
-
 class SQLGenerator:
     def __init__(self, bird_db: BirdDB, output_filename: str):
         self.bird_db = bird_db
@@ -219,7 +250,6 @@ class SQLGenerator:
 
     def generate_authors(self):
         output_data = "INSERT INTO authors (author_name) VALUES \n"
-
 
         for author in self.bird_db.authors:
             output_data += f"\t('{author.author_name}')"
@@ -270,6 +300,10 @@ class SQLGenerator:
         output_data = "INSERT INTO discovery_types (discovery_type) VALUES\n\t('SPECIES'),\n\t('GENUS');\n\n"
         self.output_file.write(output_data)
 
+    # this fella generates all the connections between authors and genera, and authors and species.
+    # because this db is supposed to be in 3nf, i just make sure that every row has only one value
+    # and stuff like that. i think. well, i should've paid more attention instead of writing python
+    # scripts to write the SQL for me, but this is more interesting
     def generate_bird_authors(self):
         output_data = "INSERT INTO bird_authors (author_id, discovery_type, genus_scientific_name) VALUES\n"
 
@@ -305,36 +339,20 @@ class SQLGenerator:
         self.generate_discovery_types()
         self.generate_bird_authors()
 
-
-bird_db = BirdDB()
-generator = SQLGenerator(bird_db, "output.sql")
-
 def generate_db():
-    # load our vernacular mames
+    bird_db = BirdDB()
+    generator = SQLGenerator(bird_db, "output.sql")
+
+    # load our common names. is nobody gonna ask why there are birds
+    # named bushtits? i want one now, but like, just for the name
     with open('vernacular_name.csv') as name_file:
         name_db.load(name_file)
 
-    # load our bird info
+    # load our bird info. birds. hell yeah.
     with open('taxon.csv') as bird_file:
         bird_db.load(bird_file)
 
-    # family = next(family for family in bird_db.families if family.scientific_name == 'Apodidae')
-    # genera_in_family = bird_db.find_in_family(family)
-
-    # for genus in genera_in_family:
-    #     print(genus)
-
-    # species_in_genus = bird_db.find_in_genus(genera_in_family[1])
-    # for species in species_in_genus:
-    #     print(species)
-    #     species.print_authors()
-
     generator.generate()
-
-    # for species in bird_db.species:
-    #     if species.taxon_id == '25f96c869ac945904c37ff2344261d49':
-    #         print(species)
-    #         species.print_authors()
 
 if __name__ == "__main__":
     generate_db()
